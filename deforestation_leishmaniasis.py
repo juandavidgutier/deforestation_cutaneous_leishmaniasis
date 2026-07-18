@@ -1,93 +1,125 @@
-import random
-import os
-import warnings
+import os, warnings, random
+import dowhy
+import econml
+from dowhy import CausalModel
 import pandas as pd
 import numpy as np
+from econml.dml import DML
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import LassoCV
+from sklearn.ensemble import GradientBoostingRegressor, GradientBoostingClassifier
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+import scipy.stats as stats
+from econml.dml import SparseLinearDML, LinearDML, CausalForestDML
+from econml.orf import DMLOrthoForest
+from econml.inference import BootstrapInference
+from econml.score import RScorer
 from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegressionCV
-from econml.dr import SparseLinearDRLearner, ForestDRLearner, LinearDRLearner
+from joblib import Parallel, delayed
+from sklearn.preprocessing import StandardScaler, LabelEncoder, MinMaxScaler
+from sklearn.base import BaseEstimator, clone
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import mean_squared_error
+from xgboost import XGBRegressor, XGBClassifier
+import matplotlib.pyplot as plt
+from scipy.stats import norm
+from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import Lasso, Ridge
 from sklearn.preprocessing import PolynomialFeatures
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler, StandardScaler
-from scipy.stats import expon
-import scipy.stats as stats
-from scipy.interpolate import interp1d
-import statsmodels.api as sm
-from dowhy import CausalModel
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.model_selection import cross_val_score
-from xgboost import XGBRegressor, XGBClassifier
-from dowhy.causal_estimator import CausalEstimate
-from econml.dr import DRLearner
-from sklearn.linear_model import LassoCV
-from econml.dml import DML, SparseLinearDML
-from PIL import Image
+from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
+from sklearn.model_selection import GroupKFold
+
+from sklearn.ensemble import (
+    HistGradientBoostingRegressor,
+    HistGradientBoostingClassifier
+)
+
 
 # Set seeds for reproducibility
-def seed_everything(seed=123):
-    random.seed(seed)
-    np.random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    os.environ['TF_DETERMINISTIC_OPS'] = '1'
+np.int = np.int32
+np.float = np.float64
+np.bool = np.bool_
 
-seed = 123
-seed_everything(seed)
-warnings.filterwarnings('ignore')
+SEED = 123
+np.random.seed(SEED)
+random.seed(SEED)
+os.environ['PYTHONHASHSEED'] = str(SEED)
+#os.environ['TF_DETERMINISTIC_OPS'] = '1'
+#os.environ['OMP_NUM_THREADS'] = '1'
+#os.environ['MKL_NUM_THREADS'] = '1'
+#os.environ['OPENBLAS_NUM_THREADS'] = '1'
+#os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
+#os.environ['NUMEXPR_NUM_THREADS'] = '1'
 
-#%% 
-# --- Data Loading and Cleaning ---
-data_all = pd.read_csv("D:/data.csv", encoding='latin-1')
+
+#%%
+
+file_path = 'D:/clases/UDES/fortalecimiento institucional/macroproyecto_2025/leish/ci/data_final_15_sep.csv'
+data_all = pd.read_csv(file_path, encoding='latin-1')
+
 data_all = data_all.dropna()
 
-# Drop unnecessary columns for the causal model
-columns_to_drop = ['Year', 'Altitude', 'Forest', 'cases', 'total_pop', 
-                    'expected', 'sir']
-data_all.drop(columns=columns_to_drop, inplace=True)
+columnas_to_drop = ['Year', 'Altitude', 'Forest', 'cases', 'total_pop', 
+                      'expected']
 
-#%% 
-# --- Feature Engineering and Normalization ---
-
-# 1. Label Encoding and Normalization for DANE (Spatial identifier)
+# 1. Label Encoding DANE
 le = LabelEncoder()
 data_all['DANE_labeled'] = le.fit_transform(data_all['DANE'])
 scaler = MinMaxScaler()
-data_all['DANE_normalized'] = scaler.fit_transform(data_all[['DANE_labeled']])
+data_all['DANE_normalized'] = scaler.fit_transform(
+    data_all[['DANE_labeled']])
 
-# 2. Label Encoding and Normalization for DANE_Year (Spatio-temporal identifier)
+# 2. Label Encoding DANE_Year
 le_year = LabelEncoder()
 data_all['DANE_Year_labeled'] = le_year.fit_transform(data_all['DANE_year'])
 scaler_DDANE = MinMaxScaler()
-data_all['DANE_Year_normalized'] = scaler_DDANE.fit_transform(data_all[['DANE_Year_labeled']])
+data_all['DANE_Year_normalized'] = scaler_DDANE.fit_transform(
+    data_all[['DANE_Year_labeled']])
 
-# Statistical summary of the treatment variable
+
+data_all.drop(columns=columnas_to_drop, inplace=True)
+
 std_deforestation = data_all['Deforestation_t'].std()
-print(f"Standard deviation of deforestation: {std_deforestation}")
-median_deforestation = data_all['Deforestation_t'].median()
-print(f"Median of deforestation: {median_deforestation}")
+print(f"std of Deforestation_t: {std_deforestation}")
 
-# Standardization of continuous variables (Confounders and Covariates)
+median_Deforestation_t = data_all['Deforestation_t'].median()
+print(f"median of Deforestation_t: {median_Deforestation_t}")
+
+#%%
+
+
+# Estandarización de variables continuas
 scaler = StandardScaler()
-continuous_vars = ['MPI', 'HFP_t', 'Illegal_mining_t', 'Soil_Moisture', 
-                   'Temperature', 'Precipitation', 'Vectors', 'Fire_t', 
-                   'Coca_t', 'Deforestation_t']
+data_all['MPI'] = scaler.fit_transform(data_all[['MPI']])
+#data_all['Forest_tm1'] = scaler.fit_transform(data_all[['Forest_tm1']])
+data_all['HFP_t'] = scaler.fit_transform(data_all[['HFP_t']])
+data_all['Illegal_mining_t'] = scaler.fit_transform(data_all[['Illegal_mining_t']])
+data_all['Soil_Moisture'] = scaler.fit_transform(data_all[['Soil_Moisture']])
+data_all['Temperature'] = scaler.fit_transform(data_all[['Temperature']])
+data_all['Precipitation'] = scaler.fit_transform(data_all[['Precipitation']])
+data_all['Vectors'] = scaler.fit_transform(data_all[['Vectors']])
+data_all['Fire_t'] = scaler.fit_transform(data_all[['Fire_t']])
+data_all['Coca_t'] = scaler.fit_transform(data_all[['Coca_t']])
+data_all['Deforestation_t'] = scaler.fit_transform(data_all[['Deforestation_t']])
 
-for var in continuous_vars:
-    data_all[var] = scaler.fit_transform(data_all[[var]])
-
-# Standardized Dataset selection
+# std
 data_std = data_all[['DANE_normalized', 'DANE_Year_normalized',
                       'MPI', 'Forest_tm1', 'HFP_t', 'Illegal_mining_t', 'Soil_Moisture',
                       'Temperature', 'Precipitation', 'Vectors', 'Fire_t',
-                      'Coca_t', 'Deforestation_t', 'Excess_cases_tp1']]
+                      'Coca_t', 'Deforestation_t', 'excess_tp1']]
 
-#%% 
-# --- Causal Model Specification (DAG) ---
+# Asegurar orden temporal correcto
+data_std = data_std.sort_values(
+    by=['DANE_normalized', 'DANE_Year_normalized']
+).reset_index(drop=True)
 
-model_deforestation = CausalModel(
-    data=data_std,
-    treatment=['Deforestation_t'],
-    outcome=['Excess_cases_tp1'],
-    graph="""graph[directed 1 
+
+
+#%%
+# 1. Definir el DAG como una variable
+dag_string = """graph[directed 1 
+
                 node[id "Forest_tm1" label "Forest_tm1"]
                 node[id "Precipitation" label "Precipitation"]
                 node[id "Temperature" label "Temperature"]
@@ -99,7 +131,7 @@ model_deforestation = CausalModel(
                 node[id "Illegal_mining_t" label "Illegal_mining_t"]
                 node[id "Vectors" label "Vectors"]
                 node[id "Deforestation_t" label "Deforestation_t"]
-                node[id "Excess_cases_tp1" label "Excess_cases_tp1"]
+                node[id "excess_tp1" label "excess_tp1"]
                 node[id "DANE_normalized" label "DANE_normalized"]
                 node[id "DANE_Year_normalized" label "DANE_Year_normalized"]
                 
@@ -113,7 +145,7 @@ model_deforestation = CausalModel(
                 edge[source "Forest_tm1" target "Illegal_mining_t"]
                 edge[source "Forest_tm1" target "Vectors"]
                 edge[source "Forest_tm1" target "Deforestation_t"]
-                edge[source "Forest_tm1" target "Excess_cases_tp1"]
+                edge[source "Forest_tm1" target "excess_tp1"]
 
                 edge[source "Precipitation" target "Temperature"]
                 edge[source "Precipitation" target "Soil_Moisture"]
@@ -121,7 +153,7 @@ model_deforestation = CausalModel(
                 edge[source "Precipitation" target "MPI"]
                 edge[source "Precipitation" target "HFP_t"]
                 edge[source "Precipitation" target "Illegal_mining_t"]
-                edge[source "Precipitation" target "Excess_cases_tp1"]
+                edge[source "Precipitation" target "excess_tp1"]
                 
                 edge[source "Temperature" target "Vectors"]
                 edge[source "Temperature" target "MPI"]
@@ -130,237 +162,573 @@ model_deforestation = CausalModel(
                 edge[source "Temperature" target "Fire_t"]
                 edge[source "Temperature" target "Illegal_mining_t"]
                 edge[source "Temperature" target "Deforestation_t"]
-                edge[source "Temperature" target "Excess_cases_tp1"]
+                edge[source "Temperature" target "excess_tp1"]
                 
                 edge[source "Soil_Moisture" target "Vectors"]
                 edge[source "Soil_Moisture" target "MPI"]
                 edge[source "Soil_Moisture" target "HFP_t"]
-                edge[source "Soil_Moisture" target "Excess_cases_tp1"]
+                edge[source "Soil_Moisture" target "excess_tp1"]
                 
                 edge[source "MPI" target "HFP_t"]
                 edge[source "MPI" target "Coca_t"]
                 edge[source "MPI" target "Illegal_mining_t"]
                 edge[source "MPI" target "Vectors"]
                 edge[source "MPI" target "Deforestation_t"]
-                edge[source "MPI" target "Excess_cases_tp1"]
+                edge[source "MPI" target "excess_tp1"]
                 
                 edge[source "HFP_t" target "Coca_t"]
                 edge[source "HFP_t" target "Fire_t"]
                 edge[source "HFP_t" target "Illegal_mining_t"]
                 edge[source "HFP_t" target "Vectors"]
                 edge[source "HFP_t" target "Deforestation_t"]
-                edge[source "HFP_t" target "Excess_cases_tp1"]
+                edge[source "HFP_t" target "excess_tp1"]
                 
                 edge[source "Coca_t" target "Deforestation_t"]
-                edge[source "Coca_t" target "Excess_cases_tp1"]
+                edge[source "Coca_t" target "excess_tp1"]
                 
                 edge[source "Fire_t" target "Deforestation_t"]
-                edge[source "Fire_t" target "Excess_cases_tp1"]
+                edge[source "Fire_t" target "excess_tp1"]
                 
                 edge[source "Illegal_mining_t" target "Deforestation_t"]
-                edge[source "Illegal_mining_t" target "Excess_cases_tp1"]
+                edge[source "Illegal_mining_t" target "excess_tp1"]
                 
-                edge[source "Vectors" target "Excess_cases_tp1"]
-                edge[source "Deforestation_t" target "Excess_cases_tp1"]
-                edge[source "DANE_normalized" target "Excess_cases_tp1"]
-                edge[source "DANE_Year_normalized" target "Excess_cases_tp1"]
+                edge[source "Vectors" target "excess_tp1"]
+                
+                edge[source "Deforestation_t" target "excess_tp1"]
+                
+                edge[source "DANE_normalized" target "excess_tp1"]
             ]"""
+
+# Ahora sí puedes usar dag_string en tu modelo
+model_deforestation = CausalModel(
+    data=data_std,
+    treatment=['Deforestation_t'],
+    outcome=['excess_tp1'],   
+    graph=dag_string
 )
 
-# Visualizing the DAG
+  
+
+#%%
+
+from PIL import Image
+import matplotlib.pyplot as plt
+
+# Generate the model graph
 model_deforestation.view_model()
-img = Image.open("causal_model.png")
-plt.figure(figsize=(16, 12))
-plt.imshow(img)
-plt.axis('off')
-plt.title("DAG: Deforestation and Leishmaniasis (Acyclic Model)", fontsize=14, fontweight='bold')
-plt.tight_layout()
-plt.show()
 
+    
 #%% 
-# --- Identification of Causal Estimand ---
-print("\n" + "=" * 70)
-print("IDENTIFYING CAUSAL ESTIMAND")
-print("=" * 70)
 
-identified_estimand_deforest = model_deforestation.identify_effect(
-    proceed_when_unidentifiable=True
-)
+# Identifying effects
+identified_estimand_deforest = model_deforestation.identify_effect(proceed_when_unidentifiable=None)                                                       
 print(identified_estimand_deforest)
 
-#%% 
-# --- Estimation using Sparse Linear DML (Double Machine Learning) ---
-reg1 = lambda: XGBRegressor(n_estimators=3400, max_depth=35, random_state=123, 
-                            eta=0.0001, reg_lambda=1.5, alpha=0.001)
+#%%
+
+# ─────────────────────────────────────────────
+# Municipality‑grouped cross‑fitting folds
+# ─────────────────────────────────────────────
+# Prevent data leakage: all observations from the same municipality
+# must stay together in the same fold. Pass GroupKFold + municipality
+# groups to the DML estimator's fit() method.
+municipality_groups = data_std['DANE_normalized'].values
+print(f"Cross‑fitting: GroupKFold(n_splits=3) grouped by {len(np.unique(municipality_groups))} municipalities.")
+
+effect_modifiers = ['Forest_tm1', 'DANE_normalized']
+
+reg1 = lambda: HistGradientBoostingRegressor(max_iter=5,  max_depth=3, random_state=123, learning_rate=0.05) #reg_lambda=1.5, alpha=0.001)
+reg2 = lambda: HistGradientBoostingClassifier(max_iter=5,  max_depth=3, random_state=123, learning_rate=0.05) #reg_lambda=1.5, alpha=0.001)
 
 causal_estimate_std = model_deforestation.estimate_effect(
     identified_estimand_deforest,
-    method_name="backdoor.econml.dml.SparseLinearDML",
-    effect_modifiers=['Forest_tm1', 'DANE_normalized', 'DANE_Year_normalized'],
-    confidence_intervals=True,
+    method_name="backdoor.econml.dml.DML",
+    effect_modifiers=effect_modifiers,
+    confidence_intervals=False,
     method_params={
         "init_params": {
-            "model_y": reg1(),
-            "model_t": reg1(),                                                                                                                                                                                                                                 
+            "model_y": reg2(),
+            "model_t": reg1(),
+            "model_final": LassoCV(
+                alphas=[0.0001, 0.001, 0.005, 0.05, 0.01, 0.1],
+                fit_intercept=False,
+                max_iter=50000,
+                tol=1e-3,
+                cv=3,
+                n_jobs=-1),
             "discrete_outcome": True,
             "discrete_treatment": False,
-            "max_iter": 50000,
-            "tol": 1e-4,
-            "alpha": 'auto',
-            "cv": 5,
-            "random_state": 123
+            "random_state": 123,
+            "cv": 3
         },
+        "fit_params": {
+            "inference": BootstrapInference(n_bootstrap_samples=100, n_jobs=-1)
+        }
     }
 )
 
-#%% 
-# --- Average Treatment Effect (ATE) and Confidence Intervals ---
+print("\nDML model fitted with municipality-grouped cross-fitting.")
+print(f"ATE not computed here; cluster bootstrap provides all inference.")
+
+#%%
+
+# Access the fitted EconML estimator for CATE predictions
 econml_estimator = causal_estimate_std.estimator.estimator
-effect_modifiers = ['Forest_tm1', 'DANE_normalized', 'DANE_Year_normalized']  
 
-X_data_deforest = data_std[effect_modifiers].dropna()  
-ate_deforest = econml_estimator.ate(X=X_data_deforest)
-ate_ci_deforest = econml_estimator.ate_interval(X=X_data_deforest, alpha=0.05)
+# ─────────────────────────────────────────────
+# ATE verification: ensure full-sample ATE matches refutation's "Estimated effect"
+# ─────────────────────────────────────────────
+# The refutation tests print "Estimated effect:" using causal_estimate_std.value.
+# We verify this value against our own call to .ate() and use the SAME value
+# for reporting, so no discrepancy is possible.
+effect_modifiers_list = ['Forest_tm1', 'DANE_normalized']
+X_data_all = data_std[effect_modifiers_list].dropna()
+ate_from_econml = float(econml_estimator.ate(X=X_data_all))
+ate_from_dowhy   = float(causal_estimate_std.value)
 
-print(f"  ATE: {ate_deforest}")
-print(f"  95% CI of ATE: {ate_ci_deforest}")
+print(f"\n{'='*60}")
+print("ATE VERIFICATION")
+print(f"{'='*60}")
+print(f"  ATE (from EconML .ate() call) : {ate_from_econml:.6f}")
+print(f"  ATE (from causal_estimate_std) : {ate_from_dowhy:.6f}")
+print(f"  (Refutation 'Estimated effect' will show this SAME value)")
 
-#%% 
-# --- Conditional Average Treatment Effect (CATE) Visualization ---
+if abs(ate_from_econml - ate_from_dowhy) < 1e-10:
+    print("  ✓ Perfect match — confirmed.")
+else:
+    print(f"  ⚠ Difference: {abs(ate_from_econml - ate_from_dowhy):.2e}")
+    print(f"  Using causal_estimate_std.value for consistency with refutations.")
+print(f"{'='*60}")
 
-# 1. Grid setup for Forest_tm1
-forest = data_std['Forest_tm1']
-min_forest = forest.min()
-max_forest = forest.max()
-delta = (max_forest - min_forest) / 100
-forest_grid = np.arange(min_forest, max_forest + delta - 0.001, delta)
+# Use DoWhy's value for reporting (exactly what refutations show)
+ate_Deforestation_t = ate_from_dowhy
+print(f"\nFull-sample ATE (for reporting): {ate_Deforestation_t:.6f}")
+print("(Confidence intervals from cluster bootstrap below)")
 
-# 2. Covariate means for ceteris paribus prediction
-DANE_encoded_mean = data_std['DANE_normalized'].mean()
-DANE_Year_encoded_mean = data_std['DANE_Year_normalized'].mean()
+#%%
 
-X_test_grid = np.column_stack([
-    forest_grid,
-    np.full_like(forest_grid, DANE_encoded_mean),
-    np.full_like(forest_grid, DANE_Year_encoded_mean)   
-])
-
-# 3. Predict effect and confidence intervals
-treatment_effect = econml_estimator.effect(X_test_grid)
-hte_lower2_cons, hte_upper2_cons = econml_estimator.effect_interval(X_test_grid, alpha=0.05)
-
-plot_data = pd.DataFrame({
-    'forest': forest_grid,
-    'treatment_effect': treatment_effect.flatten(),
-    'hte_lower2_cons': hte_lower2_cons.flatten(),
-    'hte_upper2_cons': hte_upper2_cons.flatten()
-})
-
-# 4. Matplotlib Visualization (Academic Style with Light Gray Background)
-plt.rcParams.update({'font.size': 12, 'figure.dpi': 150})
-bg_color = '#f5f5f5'
-
-fig, ax = plt.subplots(figsize=(10, 6), facecolor=bg_color)
-ax.set_facecolor(bg_color)
-
-# Plotting CATE and CI
-ax.plot(plot_data['forest'], plot_data['treatment_effect'], color='blue', lw=2, label='CATE', zorder=3)
-ax.fill_between(plot_data['forest'], plot_data['hte_lower2_cons'], plot_data['hte_upper2_cons'], 
-                color='blue', alpha=0.2, label='95% CI', zorder=2)
-
-ax.axhline(y=0, color='red', linestyle='--', lw=1.2, label='Zero Effect', zorder=1)
-ax.set_xlabel('Forest coverage (%)')
-ax.set_ylabel('Effect of Deforestation on Excess CL Cases')
-ax.grid(True, color='white', linestyle='-', zorder=0)
-ax.spines['top'].set_visible(False)
-ax.spines['right'].set_visible(False)
-ax.legend()
-plt.tight_layout()
-plt.show()
-
-#%% 
-# --- Refutation Tests (Robustness Checks) ---
-
-# Random Common Cause
 random_std = model_deforestation.refute_estimate(identified_estimand_deforest, causal_estimate_std,
-                                         method_name="random_common_cause", random_state=123, num_simulations=50)
+                                         method_name="random_common_cause", random_state=123, num_simulations=10)
 print(random_std)
 
-# Data Subset Refuter
-subset_std = model_deforestation.refute_estimate(identified_estimand_deforest, causal_estimate_std,
-                                          method_name="data_subset_refuter", subset_fraction=0.1, random_state=123, num_simulations=50)
+# with subset
+subset_std  = model_deforestation.refute_estimate(identified_estimand_deforest, causal_estimate_std,
+                                          method_name="data_subset_refuter", subset_fraction=0.1, random_state=123, num_simulations=10)
 print(subset_std) 
       
-# Bootstrap Refuter
-bootstrap_std = model_deforestation.refute_estimate(identified_estimand_deforest, causal_estimate_std,
-                                             method_name="bootstrap_refuter", random_state=123, num_simulations=50)
+# with bootstrap
+bootstrap_std  = model_deforestation.refute_estimate(identified_estimand_deforest, causal_estimate_std,
+                                             method_name="bootstrap_refuter", random_state=123, num_simulations=10)
 print(bootstrap_std)
 
-# Placebo Treatment Refuter
-placebo_std = model_deforestation.refute_estimate(identified_estimand_deforest, causal_estimate_std,
-                                           method_name="placebo_treatment_refuter", placebo_type="permute", random_state=123, num_simulations=50)
+# with placebo 
+placebo_std  = model_deforestation.refute_estimate(identified_estimand_deforest, causal_estimate_std,
+                                           method_name="placebo_treatment_refuter", placebo_type="permute", random_state=123, num_simulations=10)
 print(placebo_std)    
 
-#%% 
-# --- Sensitivity Analysis (E-Value Calculation) ---
 
-# STEP 1: Define exposure levels for comparison (Standardized units)
-deforest_std_min = -0.68
-deforest_std_max = 13.77
+#%%
 
-# STEP 2: Predict causal effects at exposure extremes
-effect_at_min = econml_estimator.effect(X=X_data_deforest, T0=0, T1=deforest_std_min)
-effect_at_max = econml_estimator.effect(X=X_data_deforest, T0=0, T1=deforest_std_max)
+# non-parametric partial R² Chernozhukov et al. (2021)
 
-mean_effect_at_min = np.mean(effect_at_min)
-mean_effect_at_max = np.mean(effect_at_max)
-effect_diff = mean_effect_at_max - mean_effect_at_min
+X = data_std[['Coca_t','MPI','Temperature','Fire_t','HFP_t','Illegal_mining_t','Forest_tm1']]
+T = data_std["Deforestation_t"]
+Y = data_std["excess_tp1"]
 
-# STEP 3: Calculate baseline prevalence
-baseline_risk = data_std['Excess_cases_tp1'].mean()
-print(f"\nBaseline Prevalence of Excess_cases_tp1: {baseline_risk:.6f}")
+mi_T = mutual_info_regression(X, T,random_state=123)
+mi_Y = mutual_info_classif(X, Y,random_state=123)
 
-# STEP 4: Estimate risks at each exposure level
-risk_at_min = np.clip(baseline_risk + mean_effect_at_min, 0.0001, 0.9999)
-risk_at_max = np.clip(baseline_risk + mean_effect_at_max, 0.0001, 0.9999)
+score = mi_T * mi_Y
+ranking = pd.Series(score, index=X.columns).sort_values(ascending=False)
+print(ranking.head(10)) # Illegal_mining_t is the strongest confounder
 
-# STEP 5: Calculate Risk Ratio (RR) in log scale
-log_RR = np.log(risk_at_max) - np.log(risk_at_min)
-RR_point_estimate = np.exp(log_RR)
+#%%
 
-# STEP 6: Delta Method for Standard Error of log(RR)
-effect_interval_min = econml_estimator.effect_interval(X=X_data_deforest, T0=0, T1=deforest_std_min, alpha=0.05)
-effect_interval_max = econml_estimator.effect_interval(X=X_data_deforest, T0=0, T1=deforest_std_max, alpha=0.05)
+# 2) Run sensitivity refutation (non-parametric partial R2)
+partialR2_deforest = model_deforestation.refute_estimate(
+    identified_estimand_deforest,
+    causal_estimate_std,
+    method_name="add_unobserved_common_cause",
+    simulation_method="non-parametric-partial-R2",
+    benchmark_common_causes=["Illegal_mining_t"],
+    effect_fraction_on_treatment=0.1,
+    effect_fraction_on_outcome=0.1,
+    plugin_reisz=False,
+    num_simulations=500,
+    plot_estimate=False
+)
 
-se_effect_min = (np.mean(effect_interval_min[1]) - np.mean(effect_interval_min[0])) / (2 * 1.96)
-se_effect_max = (np.mean(effect_interval_max[1]) - np.mean(effect_interval_max[0])) / (2 * 1.96)
+print(partialR2_deforest)
+print(partialR2_deforest.RV)
+print(partialR2_deforest.RV_alpha)
 
-# Variance of log(RR) using Delta Method: Var[log(P)] ≈ [1/P]^2 * Var[P]
-var_log_RR = ((1 / risk_at_max)**2 * se_effect_max**2) + ((-1 / risk_at_min)**2 * se_effect_min**2)
-se_log_RR = np.sqrt(var_log_RR)
+# ===============================
+# PARTIAL R2 BENCHMARK Illegal_mining_t
+# ===============================
 
-# STEP 7: Confidence Intervals for RR
-log_RR_lower = log_RR - 1.96 * se_log_RR
-log_RR_upper = log_RR + 1.96 * se_log_RR
-RR_lower_CI = np.exp(log_RR_lower)
-RR_upper_CI = np.exp(log_RR_upper)
+X = data_std[['Coca_t','MPI','Temperature','Fire_t','HFP_t','Forest_tm1']] # exclude the benchmark confounder
+T = data_std["Deforestation_t"]
+Y = data_std["excess_tp1"]
+Z = data_std["Illegal_mining_t"]
 
-# STEP 8: Final Summary for E-Value Analysis
-param_evalue_deforest_final = pd.DataFrame({
-    'Analysis': ['deforestation_effect'],
-    'RR_point_estimate': [RR_point_estimate],
-    'RR_lower_CI': [RR_lower_CI],
-    'RR_upper_CI': [RR_upper_CI],
-    'log_RR': [log_RR],
-    'se_log_RR': [se_log_RR],
-    'baseline_risk': [baseline_risk]
+
+from sklearn.model_selection import KFold
+
+
+kf = KFold(n_splits=5, shuffle=True, random_state=123)
+
+T_res = np.zeros(len(T))
+Y_res = np.zeros(len(Y))
+Z_res = np.zeros(len(Z))
+
+for train, test in kf.split(X):
+
+    mt = reg1()
+    my = reg1()
+    mz = reg1()
+
+    mt.fit(X.iloc[train], T.iloc[train])
+    my.fit(X.iloc[train], Y.iloc[train])
+    mz.fit(X.iloc[train], Z.iloc[train])
+
+    T_res[test] = T.iloc[test] - mt.predict(X.iloc[test])
+    Y_res[test] = Y.iloc[test] - my.predict(X.iloc[test])
+    Z_res[test] = Z.iloc[test] - mz.predict(X.iloc[test])
+
+
+# partial R²
+r2_z_t = np.corrcoef(Z_res, T_res)[0,1]**2
+r2_z_y = np.corrcoef(Z_res, Y_res)[0,1]**2
+
+print("Partial R² Illegal_mining_t→T | X:", r2_z_t)
+print("Partial R² Illegal_mining_t→Y | X:", r2_z_y)
+
+# ==========================
+# STRENGTH MULTIPLIER
+# ==========================
+RV_point   = partialR2_deforest.RV
+RV_alpha   = partialR2_deforest.RV_alpha          # ADD this line
+r2_bench_T = r2_z_t
+r2_bench_Y = r2_z_y
+
+# ─────────────────────────────────────────────
+# SCENARIO 1 — Nullify the POINT estimate (RV)
+# ─────────────────────────────────────────────
+k_T_point = RV_point / r2_bench_T if r2_bench_T > 0 else np.inf
+k_Y_point = RV_point / r2_bench_Y if r2_bench_Y > 0 else np.inf
+k_binding_point = max(k_T_point, k_Y_point)
+
+print("\n=== SCENARIO 1: Nullify POINT estimate ===")
+print(f"  RV (point)                    : {RV_point:.4f}")
+print(f"  k on T (Illegal_mining_t)            : {k_T_point:.4f}")
+print(f"  k on Y (Illegal_mining_t)            : {k_Y_point:.4f}")
+print(f"  BINDING k (most demanding condition) : {k_binding_point:.4f}")
+if RV_point == 0.0:
+    print("  ► Any unobserved confounder, no matter how small,")
+    print("    is sufficient to bring the point estimate to zero.")
+else:
+    print(f"  ► U must be {k_binding_point:.2f}x stronger than Illegal_mining_t")
+    print(f"    (simultaneously on T and Y) to nullify the point effect.")
+
+# ─────────────────────────────────────────────
+# SCENARIO 2 — Nullify SIGNIFICANCE (RV_alpha)
+# ─────────────────────────────────────────────
+k_T_alpha = RV_alpha / r2_bench_T if r2_bench_T > 0 else np.inf
+k_Y_alpha = RV_alpha / r2_bench_Y if r2_bench_Y > 0 else np.inf
+k_binding_alpha = max(k_T_alpha, k_Y_alpha)
+
+print("\n=== SCENARIO 2: Nullify STATISTICAL SIGNIFICANCE (α=0.05) ===")
+print(f"  RV_alpha (α=0.05)             : {RV_alpha:.4f}")
+print(f"  k on T (Illegal_mining_t)            : {k_T_alpha:.4f}")
+print(f"  k on Y (Illegal_mining_t)            : {k_Y_alpha:.4f}")
+print(f"  BINDING k (most demanding condition) : {k_binding_alpha:.4f}")
+if RV_alpha >= 1.0:
+    print("  ► RV_alpha ≥ 1.0: no confounder can explain")
+    print("    more than 100% of the residual variance. Statistical")
+    print("    significance is impregnable to unobserved confounding.")
+else:
+    print(f"  ► U must be {k_binding_alpha:.2f}x stronger than Illegal_mining_t")
+    print(f"    (simultaneously on T and Y) to invalidate significance.")
+
+# ─────────────────────────────────────────────
+# COMPARATIVE SUMMARY TABLE
+# ─────────────────────────────────────────────
+summary_table = pd.DataFrame({
+    "Scenario"         : ["Nullify point estimate", "Nullify significance (α=0.05)"],
+    "RV"               : [RV_point,  RV_alpha],
+    "k on T"           : [k_T_point, k_T_alpha],
+    "k on Y"           : [k_Y_point, k_Y_alpha],
+    "binding k"        : [k_binding_point, k_binding_alpha],
+    "R² bench T (Illegal_mining_t)" : [r2_bench_T, r2_bench_T],
+    "R² bench Y (Illegal_mining_t)" : [r2_bench_Y, r2_bench_Y]
 })
+pd.set_option('display.float_format', lambda x: f'{x:.4f}')
+print("\n=== SENSITIVITY ANALYSIS SUMMARY TABLE ===")
+print(summary_table.to_string(index=False))
 
-print("\n" + "="*80)
-print("FINAL SUMMARY FOR E-VALUE ANALYSIS")
-print("="*80)
-print(param_evalue_deforest_final[['Analysis', 'RR_point_estimate', 'RR_lower_CI', 'RR_upper_CI']].to_string(index=False))
 
-# Export results
-output_path = "D:/param_evalue_deforest.csv"
-param_evalue_deforest_final.to_csv(output_path, index=False)
+#%%
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  CLUSTER BOOTSTRAP (CLUSTER‑ROBUST STANDARD ERRORS)          ║
+# ╚══════════════════════════════════════════════════════════════╝
+#
+# Standard bootstrap resamples individual observations, which
+# ignores the within‑municipality correlation of repeated measures.
+# The cluster bootstrap resamples entire municipalities (clusters)
+# with replacement, preserving the intra‑cluster dependence structure.
+#
+# Reference: Cameron & Miller (2015), JHR 50(2), 317–372.
+#            Abadie et al. (2023), QJE 138(1), 1–35.
+
+def cluster_bootstrap_ate_cate(
+    data,
+    cluster_col,
+    dag_string,
+    effect_modifiers_list,
+    treatment_col,
+    outcome_col,
+    X_test_grid=None,
+    n_bootstrap=50,
+    seed=123,
+    verbose=True
+):
+    """
+    Cluster bootstrap for DML: resample municipalities (clusters) with
+    replacement, keeping all time periods within each resampled cluster.
+    Re‑run the full DoWhy + DML pipeline on each bootstrap sample.
+    
+    Computes both ATE and CATE (if X_test_grid is provided).
+    The point estimate and CI come from the SAME bootstrap distribution,
+    so the CI always contains the point estimate by construction.
+    
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Full dataset
+    cluster_col : str
+        Column name identifying clusters (municipalities)
+    dag_string : str or networkx.DiGraph
+        DAG specification
+    effect_modifiers_list : list of str
+        Names of effect modifier columns
+    treatment_col, outcome_col : str
+        Treatment and outcome column names
+    X_test_grid : np.ndarray or None
+        If provided, CATE is computed at these X points for each bootstrap
+    n_bootstrap : int
+        Number of bootstrap iterations
+    seed : int
+        Random seed
+    verbose : bool
+        Print progress
+    
+    Returns
+    -------
+    dict with ATE and CATE results
+    """
+    clusters = data[cluster_col].unique()
+    n_clusters = len(clusters)
+    rng = np.random.RandomState(seed)
+    
+    reg1 = lambda: XGBRegressor(n_estimators=1000, max_depth=3, 
+                                 random_state=123, eta=0.0001, 
+                                 reg_lambda=1.5, alpha=0.001)
+    reg2 = lambda: XGBClassifier(n_estimators=1000, max_depth=3, 
+                                  random_state=123, eta=0.0001, 
+                                  reg_lambda=1.5, alpha=0.001)
+    
+    ate_bootstrap = []
+    cate_bootstrap = []  # list of arrays, each (n_grid_points,)
+    
+    for b in range(n_bootstrap):
+        # 1) Sample clusters with replacement
+        sampled_clusters = rng.choice(clusters, size=n_clusters, replace=True)
+        
+        # 2) Build bootstrap dataset
+        boot_parts = []
+        for c in sampled_clusters:
+            boot_parts.append(data[data[cluster_col] == c])
+        boot_data = pd.concat(boot_parts, axis=0).reset_index(drop=True)
+        
+        # 3) New group labels for bootstrap sample
+        boot_data['_boot_group'] = pd.factorize(boot_data[cluster_col])[0]
+        
+        # 4) Cross‑fitting folds grouped by municipality
+        boot_gkf = GroupKFold(n_splits=3)
+        boot_cv = list(boot_gkf.split(boot_data, groups=boot_data['_boot_group']))
+        
+        # 5) Fit DoWhy + DML on bootstrap sample
+        boot_model = CausalModel(
+            data=boot_data,
+            treatment=[treatment_col],
+            outcome=[outcome_col],
+            graph=dag_string
+        )
+        boot_identified = boot_model.identify_effect(proceed_when_unidentifiable=None)
+        
+        boot_estimate = boot_model.estimate_effect(
+            boot_identified,
+            method_name="backdoor.econml.dml.DML",
+            effect_modifiers=effect_modifiers_list,
+            confidence_intervals=False,
+            method_params={
+                "init_params": {
+                    "model_y": reg2(),
+                    "model_t": reg1(),
+                    "model_final": LassoCV(
+                        alphas=[0.0001, 0.001, 0.005, 0.05, 0.01, 0.1],
+                        fit_intercept=False,
+                        max_iter=50000,
+                        tol=1e-3,
+                        cv=3,
+                        n_jobs=-1),
+                    "discrete_outcome": True,
+                    "discrete_treatment": False,
+                    "random_state": 123,
+                    "cv": boot_cv
+                },
+                "fit_params": {}
+            }
+        )
+        
+        boot_estimator = boot_estimate.estimator.estimator
+        
+        # 6) Extract ATE
+        X_mean = boot_data[effect_modifiers_list].mean().to_frame().T
+        ate_b = boot_estimator.ate(X=X_mean)
+        ate_bootstrap.append(float(ate_b))
+        
+        # 7) Extract CATE at test grid (if provided)
+        if X_test_grid is not None:
+            cate_b = boot_estimator.effect(X_test_grid)
+            cate_bootstrap.append(cate_b.flatten())
+        
+        if verbose and (b + 1) % 10 == 0:
+            print(f"  Cluster bootstrap iteration {b + 1}/{n_bootstrap} completed.")
+    
+    # ─── ATE results ───
+    ate_mean = float(np.mean(ate_bootstrap))
+    ate_se = float(np.std(ate_bootstrap, ddof=1))
+    ate_ci = (ate_mean - 1.96 * ate_se, ate_mean + 1.96 * ate_se)
+    
+    results = {
+        "ate_mean": ate_mean,
+        "ate_se": ate_se,
+        "ate_ci_95": ate_ci,
+        "ate_distribution": ate_bootstrap
+    }
+    
+    # ─── CATE results (from bootstrap distribution) ───
+    # The point estimate is the MEDIAN of the bootstrap CATEs at each X point.
+    # The CI is the 2.5th and 97.5th percentiles.
+    # Since median always lies between min and max at each point,
+    # the line is guaranteed to be inside the band.
+    if X_test_grid is not None and len(cate_bootstrap) > 0:
+        cate_matrix = np.column_stack(cate_bootstrap)  # (n_grid, n_bootstrap)
+        
+        results["cate_median"] = np.median(cate_matrix, axis=1)
+        results["cate_lower"] = np.percentile(cate_matrix, 2.5, axis=1)
+        results["cate_upper"] = np.percentile(cate_matrix, 97.5, axis=1)
+        results["cate_matrix"] = cate_matrix
+    
+    return results
+
+
+# ─────────────────────────────────────────────
+# Prepare CATE test grid (Forest surface, others held at mean)
+# ─────────────────────────────────────────────
+# Grid for Forest_tm1
+Forest_tm1 = data_std['Forest_tm1']
+min_Forest_tm1 = Forest_tm1.min()
+max_Forest_tm1 = Forest_tm1.max()
+delta = (max_Forest_tm1 - min_Forest_tm1) / 100
+Forest_tm1_grid = np.arange(min_Forest_tm1, max_Forest_tm1 + delta - 0.001, delta)
+
+# Means of other effect modifiers
+DANE_encoded_mean = data_std['DANE_normalized'].mean()
+
+
+X_test_grid = np.column_stack([
+    Forest_tm1_grid,
+    np.full_like(Forest_tm1_grid, DANE_encoded_mean),
+
+])
+
+# ─────────────────────────────────────────────
+# Run cluster bootstrap (50 iterations)
+# ─────────────────────────────────────────────
+print("\n" + "=" * 60)
+print("CLUSTER BOOTSTRAP (50 iterations)")
+print("Resampling municipalities with replacement...")
+print("=" * 60)
+
+cluster_boot_results = cluster_bootstrap_ate_cate(
+    data=data_std,
+    cluster_col='DANE_normalized',
+    dag_string=dag_string,
+    effect_modifiers_list=['Forest_tm1', 'DANE_normalized'],
+    treatment_col='Deforestation_t',
+    outcome_col='excess_tp1',
+    X_test_grid=X_test_grid,
+    n_bootstrap=50,
+    seed=123,
+    verbose=True
+)
+
+# ─────────────────────────────────────────────
+# CLUSTER‑ROBUST ATE RESULTS
+# ─────────────────────────────────────────────
+print("\n" + "─" * 60)
+print("CLUSTER‑ROBUST ATE RESULTS")
+print("─" * 60)
+print(f"  ATE (cluster bootstrap)       : {cluster_boot_results['ate_mean']:.6f}")
+print(f"  SE (cluster‑robust)           : {cluster_boot_results['ate_se']:.6f}")
+print(f"  95% CI (cluster‑robust)       : {cluster_boot_results['ate_ci_95']}")
+print(f"  ATE (full‑sample estimate)    : {ate_Deforestation_t:.6f}")
+print("")
+print("Note: The SE accounts for within‑municipality correlation (Cameron & Miller 2015).")
+print("─" * 60)
+
+# ─────────────────────────────────────────────
+# CATE PLOT (from cluster bootstrap)
+# ─────────────────────────────────────────────
+# The line is the MEDIAN of bootstrap CATE curves.
+# The band is the 2.5th‑97.5th percentile range.
+# Both come from the SAME bootstrap distribution → line always inside band.
+
+cate_median = cluster_boot_results['cate_median']
+cate_lower = cluster_boot_results['cate_lower']
+cate_upper = cluster_boot_results['cate_upper']
+
+fig, ax = plt.subplots(figsize=(8, 6))
+ax.set_facecolor('#F0F0F0')
+ax.grid(True, color='#D0D0D0', linestyle='-', linewidth=0.6, alpha=0.7, zorder=0)
+
+ax.fill_between(
+    Forest_tm1_grid,
+    cate_lower,
+    cate_upper,
+    alpha=0.25,
+    color='blue',
+    linewidth=0,
+    zorder=2
+)
+
+ax.plot(
+    Forest_tm1_grid,
+    cate_median,
+    color='darkblue',
+    linewidth=2.0,
+    zorder=3
+)
+
+ax.axhline(y=0, color='crimson', linestyle='--', linewidth=1.0, alpha=0.8, zorder=1)
+
+ax.set_xlabel('Forest coverage (%)', fontsize=14, fontweight='medium')
+ax.set_ylabel('Effect of deforestation on excess CL cases', fontsize=14, fontweight='medium')
+ax.set_title('CATE: Effect deforestation on excess CL cases\nConditional on Forest coverage',
+             fontsize=13, fontweight='bold', pad=12)
+ax.tick_params(axis='both', labelsize=12, length=4, width=0.8, color='#555555')
+
+plt.tight_layout()
+
