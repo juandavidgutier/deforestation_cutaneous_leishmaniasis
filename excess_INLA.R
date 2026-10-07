@@ -1,9 +1,9 @@
-# OJO OJO CORRER ESTO DESPUES DE OBTENER EL DATASET FINAL
-# "expected" DEBE CALCULARSE CON EPITOOLS
+# WARNING WARNING RUN THIS AFTER OBTAINING THE FINAL DATASET
+# "expected" MUST BE COMPUTED WITH EPITOOLS
 
 
 # ------------------------------------------------------------
-# 0) LIBRERÍAS
+# 0) LIBRARIES
 # ------------------------------------------------------------
 library(dplyr)
 library(sf)
@@ -11,34 +11,34 @@ library(INLA)
 library(spdep)
 
 # ------------------------------------------------------------
-# 1) DATOS (SIN AGREGAR)
+# 1) DATA (NOT AGGREGATED)
 # ------------------------------------------------------------
-obs_exp <- read.csv("D:/clases/UDES/fortalecimiento institucional/macroproyecto_2025/leish/ci/data_final_15_sep.csv")
+obs_exp <- read.csv("D:/data.csv")
 
 obs_exp$DANE <- as.character(obs_exp$DANE)
 obs_exp$period <- as.character(obs_exp$Year) 
 
 # ------------------------------------------------------------
-# 2) SHAPEFILE Y GRAFO (ORIGINAL)
+# 2) SHAPEFILE AND GRAPH (ORIGINAL)
 # ------------------------------------------------------------
-shp <- st_read("D:/clases/UDES/MAPAS PROYECTOS/mapa municipios/MGN_MPIO_POLITICO_wgs84_sin_San_Andres.shp",
+shp <- st_read("D:/map/MGN_MPIO_POLITICO_wgs84_sin_San_Andres.shp",
                quiet = TRUE)
 
 shp <- st_make_valid(shp)
 shp$DANE <- as.character(shp$DANE)
 
-# ORDENAR (CRÍTICO)
+# SORT (CRITICAL)
 shp <- shp %>% arrange(DANE)
 
 # ------------------------------------------------------------
-# 3) HACER CONSISTENTE SHAPEFILE Y DATOS
+# 3) MAKE SHAPEFILE AND DATA CONSISTENT
 # ------------------------------------------------------------
 
-# Intersección válida
+# Valid intersection
 dane_validos <- intersect(shp$DANE, unique(obs_exp$DANE))
-cat("Municipios válidos:", length(dane_validos), "\n")
+cat("Valid municipalities:", length(dane_validos), "\n")
 
-# Filtrar shapefile
+# Filter shapefile
 shp2 <- shp %>%
   filter(DANE %in% dane_validos) %>%
   arrange(DANE)
@@ -49,16 +49,16 @@ adj_file <- tempfile(fileext = ".adj")
 nb2INLA(adj_file, nb)
 g <- inla.read.graph(adj_file)
 
-# Crear índice espacial consistente
+# Create consistent spatial index
 shp2 <- shp2 %>%
   mutate(idx_espacial = row_number())
 
-# Filtrar datos
+# Filter data
 obs_exp_filtrado <- obs_exp %>%
   filter(DANE %in% dane_validos)
 
 # ------------------------------------------------------------
-# 4) CONSTRUIR DATASET MUNICIPIO–PERIODO
+# 4) BUILD MUNICIPALITY–PERIOD DATASET
 # ------------------------------------------------------------
 datos_modelo <- obs_exp_filtrado %>%
   left_join(
@@ -67,28 +67,28 @@ datos_modelo <- obs_exp_filtrado %>%
   ) %>%
   arrange(DANE, period)
 
-cat("NAs en idx_espacial:", sum(is.na(datos_modelo$idx_espacial)), "\n")
+cat("NAs in idx_espacial:", sum(is.na(datos_modelo$idx_espacial)), "\n")
 
 stopifnot(sum(is.na(datos_modelo$idx_espacial)) == 0)
 stopifnot(length(unique(datos_modelo$idx_espacial)) == g$n)
 
 # ------------------------------------------------------------
-# 5) ÍNDICES TEMPORALES E INTERACCIÓN
+# 5) TEMPORAL INDICES AND INTERACTION
 # ------------------------------------------------------------
 
-# Índice temporal
+# Temporal index
 datos_modelo <- datos_modelo %>%
   mutate(
     idx_tiempo = as.numeric(as.factor(period))
   )
 
-# Índice IID espacial
+# Spatial IID index
 datos_modelo <- datos_modelo %>%
   mutate(
     idx_espacial_iid = idx_espacial
   )
 
-# Interacción espacio-tiempo
+# Space-time interaction
 datos_modelo <- datos_modelo %>%
   mutate(
     idx_interaccion = interaction(idx_espacial, idx_tiempo, drop = TRUE) %>%
@@ -101,18 +101,18 @@ datos_modelo <- datos_modelo %>%
     log_E = log(expected + 0.001)
   )
 
-# Resumen
-cat("Filas totales:", nrow(datos_modelo), "\n")
-cat("Municipios:", length(unique(datos_modelo$idx_espacial)), "\n")
-cat("Periodos:", length(unique(datos_modelo$idx_tiempo)), "\n")
+# Summary
+cat("Total rows:", nrow(datos_modelo), "\n")
+cat("Municipalities:", length(unique(datos_modelo$idx_espacial)), "\n")
+cat("Periods:", length(unique(datos_modelo$idx_tiempo)), "\n")
 
 # ------------------------------------------------------------
-# 6) MODELO ESPACIO-TEMPORAL (BYM + TIEMPO)
+# 6) SPACE-TIME MODEL (BYM + TIME)
 # ------------------------------------------------------------
 
 formula_st <- cases ~ 1 +
   
-  # 🔹 Espacial estructurado (ICAR)
+  # 🔹 Structured spatial (ICAR)
   f(idx_espacial,
     model       = "besag",
     graph       = g,
@@ -122,7 +122,7 @@ formula_st <- cases ~ 1 +
     )
   ) +
   
-  # 🔹 Espacial no estructurado
+  # 🔹 Unstructured spatial
   f(idx_espacial_iid,
     model = "iid",
     hyper = list(
@@ -138,7 +138,7 @@ formula_st <- cases ~ 1 +
     )
   ) +
   
-  # 🔹 Interacción espacio-tiempo
+  # 🔹 Space-time interaction
   f(idx_interaccion,
     model = "iid",
     hyper = list(
@@ -147,7 +147,7 @@ formula_st <- cases ~ 1 +
   )
 
 # ------------------------------------------------------------
-# 7) AJUSTE DEL MODELO
+# 7) MODEL FITTING
 # ------------------------------------------------------------
 
 fit_st <- inla(
@@ -173,7 +173,7 @@ summary(fit_st)
 
 lp <- fit_st$summary.linear.predictor
 
-# Verifique nombres de columnas
+# Check column names
 print(names(lp))
 
 # SIR = exp(eta) = exp(log(mu) - log(E))
@@ -181,10 +181,10 @@ datos_modelo$SIR_mean  <- exp(lp$mean - datos_modelo$log_E)
 datos_modelo$SIR_lwr95 <- exp(lp$`0.025quant` - datos_modelo$log_E)
 datos_modelo$SIR_upr95 <- exp(lp$`0.975quant` - datos_modelo$log_E)
 
-# Probabilidad de exceso (aproximación)
+# Excess probability (approximation)
 datos_modelo$excess <- as.integer(datos_modelo$SIR_lwr95 > 1)
 
-# Resumen
+# Summary
 summary(datos_modelo$SIR_mean)
 
 str(datos_modelo)
@@ -192,16 +192,16 @@ str(datos_modelo)
 
 
 datos_modelo <- datos_modelo %>%
-  # 1. Ordenar por municipio y año para asegurar la secuencia temporal
+  # 1. Sort by municipality and year to ensure the temporal sequence
   arrange(DANE, Year) %>%
   
-  # 2. Agrupar por el código DANE de cada municipio
+  # 2. Group by the DANE code of each municipality
   group_by(DANE) %>%
   
-  # 3. Crear la nueva variable usando lead() para obtener el valor del año siguiente
+  # 3. Create the new variable using lead() to obtain the next year's value
   mutate(excess_tp1 = lead(excess, n = 1)) %>%
   
-  # 4. Quitar el agrupamiento para evitar problemas en operaciones futuras
+  # 4. Remove the grouping to avoid problems in future operations
   ungroup()
 
-write.csv(datos_modelo, "D:/clases/UDES/fortalecimiento institucional/macroproyecto_2025/leish/ci/data_final_15_sep.csv")
+write.csv(datos_modelo, "D:/data.csv")
